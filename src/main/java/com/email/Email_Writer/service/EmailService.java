@@ -7,41 +7,27 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
-
 import java.util.Map;
 
 @Service
 public class EmailService {
 
-    private final WebClient webclient;
+    private final WebClient webClient;
 
-    @Value("${openrouter.api.url}")
-    private String openRouterUrl;
+    @Value("${hf.api.url}")
+    private String hfApiUrl;
 
-    @Value("${openrouter.api.key}")
-    private String openRouterKey;
-
-    public EmailService(WebClient.Builder webclientBuilder) {
-        this.webclient = webclientBuilder.build();
+    public EmailService(WebClient.Builder webClientBuilder) {
+        this.webClient = webClientBuilder.build();
     }
 
     public String EmailReply(EmailRequest emailRequest) {
         String prompt = buildPrompt(emailRequest);
 
-        Map<String, Object> requestBody = Map.of(
-                "model", "mistralai/mistral-7b-instruct:free", // ✅ Free model
-                "messages", new Object[]{
-                        Map.of("role", "system", "content", "You are a helpful email assistant."),
-                        Map.of("role", "user", "content", prompt)
-                },
-                "temperature", 0.7
-        );
+        Map<String, Object> requestBody = Map.of("inputs", prompt);
 
-        String response = webclient.post()
-                .uri(openRouterUrl)
-                .header("Authorization", "Bearer " + openRouterKey)
-                .header("HTTP-Referer", "https://your-app-name.com") // optional but recommended
-                .header("X-Title", "Email Writer App")               // shows in OpenRouter dashboard
+        String response = webClient.post()
+                .uri(hfApiUrl)
                 .header("Content-Type", "application/json")
                 .bodyValue(requestBody)
                 .retrieve()
@@ -52,41 +38,33 @@ public class EmailService {
                 })
                 .block();
 
-        return extractResponse(response);
+        return extractResponseContent(response);
     }
 
-    private String extractResponse(String response) {
+    private String extractResponseContent(String response) {
         try {
-            if (response == null || response.isBlank()) {
-                return "Empty response from model.";
-            }
+            if (response == null || response.isBlank()) return "Empty response from model";
 
             ObjectMapper mapper = new ObjectMapper();
             JsonNode root = mapper.readTree(response);
 
-            JsonNode errorNode = root.path("error");
-            if (!errorNode.isMissingNode()) {
-                return "API Error: " + errorNode.toString();
+            // For Hugging Face, result is usually an array with "generated_text"
+            if (root.isArray() && root.size() > 0) {
+                return root.get(0).path("generated_text").asText("No output");
             }
-
-            JsonNode choices = root.path("choices");
-            if (!choices.isArray() || choices.size() == 0) {
-                return "No response generated.";
-            }
-
-            return choices.get(0).path("message").path("content").asText("No content.");
+            return "Unexpected response: " + response;
         } catch (Exception e) {
             return "Error parsing response: " + e.getMessage();
         }
     }
 
     private String buildPrompt(EmailRequest emailRequest) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("Write a professional email reply for the following message.");
-        if (emailRequest.getTone() != null && !emailRequest.getTone().isBlank()) {
-            sb.append(" Use a ").append(emailRequest.getTone()).append(" tone.");
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("Generate a professional email reply for the following content.");
+        if (emailRequest.getTone() != null && !emailRequest.getTone().isEmpty()) {
+            prompt.append(" Use a ").append(emailRequest.getTone()).append(" tone.");
         }
-        sb.append("\n\nOriginal Email:\n").append(emailRequest.getContent());
-        return sb.toString();
+        prompt.append("\nEmail:\n").append(emailRequest.getContent());
+        return prompt.toString();
     }
 }
