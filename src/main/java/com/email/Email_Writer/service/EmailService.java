@@ -13,37 +13,37 @@ import java.util.Map;
 @Service
 public class EmailService {
 
-
     private final WebClient webclient;
 
-    @Value("${gemini.api.url}")
-    private String geminiApiUrl;
+    @Value("${openrouter.api.url}")
+    private String openRouterUrl;
 
-    @Value("${gemini.api.key}")
-    private String geminiApiKey;
-
+    @Value("${openrouter.api.key}")
+    private String openRouterKey;
 
     public EmailService(WebClient.Builder webclientBuilder) {
         this.webclient = webclientBuilder.build();
     }
 
     public String EmailReply(EmailRequest emailRequest) {
-        //build a prompt
-        String prompt=buildprompt(emailRequest);
+        String prompt = buildPrompt(emailRequest);
 
-        //crafting request
-        Map<String, Object> requstbody=Map.of(
-                "contents", new Object[]{
-                        Map.of("parts", new Object[]{
-                                Map.of("text", prompt)
-                        })
-                }
+        Map<String, Object> requestBody = Map.of(
+                "model", "mistralai/mistral-7b-instruct:free", // ✅ Free model
+                "messages", new Object[]{
+                        Map.of("role", "system", "content", "You are a helpful email assistant."),
+                        Map.of("role", "user", "content", prompt)
+                },
+                "temperature", 0.7
         );
-        //do request
-        String response=webclient.post()
-                .uri(geminiApiUrl+ "?key=" +geminiApiKey)
+
+        String response = webclient.post()
+                .uri(openRouterUrl)
+                .header("Authorization", "Bearer " + openRouterKey)
+                .header("HTTP-Referer", "https://your-app-name.com") // optional but recommended
+                .header("X-Title", "Email Writer App")               // shows in OpenRouter dashboard
                 .header("Content-Type", "application/json")
-                .bodyValue(requstbody)
+                .bodyValue(requestBody)
                 .retrieve()
                 .bodyToMono(String.class)
                 .onErrorResume(e -> {
@@ -51,51 +51,42 @@ public class EmailService {
                     return Mono.just("{\"error\":\"" + e.getMessage() + "\"}");
                 })
                 .block();
-        //response
-        return extractResponseContent(response);
 
-
+        return extractResponse(response);
     }
 
-    private String extractResponseContent(String response) {
-        try{
+    private String extractResponse(String response) {
+        try {
             if (response == null || response.isBlank()) {
-                return "Empty response from model";
+                return "Empty response from model.";
             }
+
             ObjectMapper mapper = new ObjectMapper();
             JsonNode root = mapper.readTree(response);
 
-            // Return API error message if present
             JsonNode errorNode = root.path("error");
             if (!errorNode.isMissingNode()) {
-                String message = errorNode.path("message").asText("Unknown error");
-                return "Model error: " + message;
+                return "API Error: " + errorNode.toString();
             }
 
-            JsonNode candidates = root.path("candidates");
-            if (candidates.isMissingNode() || !candidates.isArray() || candidates.size() == 0) {
-                return "No candidates returned by model";
+            JsonNode choices = root.path("choices");
+            if (!choices.isArray() || choices.size() == 0) {
+                return "No response generated.";
             }
 
-            JsonNode first = candidates.get(0);
-            JsonNode textNode = first.path("content").path("parts");
-            if (!textNode.isArray() || textNode.size() == 0) {
-                return "No content in model response";
-            }
-
-            return textNode.get(0).path("text").asText("");
+            return choices.get(0).path("message").path("content").asText("No content.");
         } catch (Exception e) {
             return "Error parsing response: " + e.getMessage();
         }
     }
 
-    private String buildprompt(EmailRequest emailRequest) {
-        StringBuilder prompt=new StringBuilder();
-        prompt.append("generate a professional email reply for email content");
-         if(emailRequest.getTone()!=null && !emailRequest.getTone().isEmpty()) {
-             prompt.append(" Use a").append(emailRequest.getTone()).append(" tone.");
-         }
-         prompt.append("\nEmail: \n").append(emailRequest.getContent());
-         return prompt.toString();
+    private String buildPrompt(EmailRequest emailRequest) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Write a professional email reply for the following message.");
+        if (emailRequest.getTone() != null && !emailRequest.getTone().isBlank()) {
+            sb.append(" Use a ").append(emailRequest.getTone()).append(" tone.");
+        }
+        sb.append("\n\nOriginal Email:\n").append(emailRequest.getContent());
+        return sb.toString();
     }
 }
