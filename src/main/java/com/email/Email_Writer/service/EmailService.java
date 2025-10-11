@@ -7,27 +7,40 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+
 import java.util.Map;
 
 @Service
 public class EmailService {
 
-    private final WebClient webClient;
+    private final WebClient webclient;
 
-    @Value("${hf.api.url}")
-    private String hfApiUrl;
+    @Value("${gemini.api.url}")
+    private String geminiApiUrl;
 
-    public EmailService(WebClient.Builder webClientBuilder) {
-        this.webClient = webClientBuilder.build();
+    @Value("${gemini.api.key}")
+    private String geminiApiKey;
+
+    public EmailService(WebClient.Builder webclientBuilder) {
+        this.webclient = webclientBuilder.build();
     }
 
     public String EmailReply(EmailRequest emailRequest) {
-        String prompt = buildPrompt(emailRequest);
+        // ✅ Build the prompt
+        String prompt = buildprompt(emailRequest);
 
-        Map<String, Object> requestBody = Map.of("inputs", prompt);
+        // ✅ Create request body
+        Map<String, Object> requestBody = Map.of(
+                "contents", new Object[]{
+                        Map.of("parts", new Object[]{
+                                Map.of("text", prompt)
+                        })
+                }
+        );
 
-        String response = webClient.post()
-                .uri(hfApiUrl)
+        // ✅ Send the request
+        String response = webclient.post()
+                .uri(geminiApiUrl + "?key=" + geminiApiKey)
                 .header("Content-Type", "application/json")
                 .bodyValue(requestBody)
                 .retrieve()
@@ -38,33 +51,51 @@ public class EmailService {
                 })
                 .block();
 
+        // ✅ Extract the AI-generated text
         return extractResponseContent(response);
+    }
+
+    // ✅ Use this new buildprompt method
+    private String buildprompt(EmailRequest emailRequest) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("Generate a professional email reply based on the content below.");
+        if (emailRequest.getTone() != null && !emailRequest.getTone().isEmpty()) {
+            prompt.append(" Use a ").append(emailRequest.getTone()).append(" tone.");
+        }
+        prompt.append("\n\nEmail Content:\n").append(emailRequest.getContent());
+        return prompt.toString();
     }
 
     private String extractResponseContent(String response) {
         try {
-            if (response == null || response.isBlank()) return "Empty response from model";
+            if (response == null || response.isBlank()) {
+                return "Empty response from model";
+            }
 
             ObjectMapper mapper = new ObjectMapper();
             JsonNode root = mapper.readTree(response);
 
-            // For Hugging Face, result is usually an array with "generated_text"
-            if (root.isArray() && root.size() > 0) {
-                return root.get(0).path("generated_text").asText("No output");
+            // If error node exists
+            JsonNode errorNode = root.path("error");
+            if (!errorNode.isMissingNode()) {
+                String message = errorNode.path("message").asText("Unknown error");
+                return "Model error: " + message;
             }
-            return "Unexpected response: " + response;
+
+            JsonNode candidates = root.path("candidates");
+            if (candidates.isMissingNode() || !candidates.isArray() || candidates.size() == 0) {
+                return "No candidates returned by model";
+            }
+
+            JsonNode first = candidates.get(0);
+            JsonNode textNode = first.path("content").path("parts");
+            if (!textNode.isArray() || textNode.size() == 0) {
+                return "No content in model response";
+            }
+
+            return textNode.get(0).path("text").asText("");
         } catch (Exception e) {
             return "Error parsing response: " + e.getMessage();
         }
-    }
-
-    private String buildPrompt(EmailRequest emailRequest) {
-        StringBuilder prompt = new StringBuilder();
-        prompt.append("Generate a professional email reply for the following content.");
-        if (emailRequest.getTone() != null && !emailRequest.getTone().isEmpty()) {
-            prompt.append(" Use a ").append(emailRequest.getTone()).append(" tone.");
-        }
-        prompt.append("\nEmail:\n").append(emailRequest.getContent());
-        return prompt.toString();
     }
 }
